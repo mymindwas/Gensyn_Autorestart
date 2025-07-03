@@ -143,12 +143,12 @@ monitor_rl_swarm() {
             screen -S "$SCREEN_NAME" -X stuff "Gensyn/Qwen2.5-0.5B-Instruct$(printf '\r')"
         fi
         
-        # 检测wandb同步信息
-        if echo "$line" | grep -q "wandb: You can sync this run to the cloud by running:"; then
-            log_warn "检测到wandb同步信息，准备重启..."
+        # 检测异常错误
+        if echo "$line" | grep -E "(ERROR: Exception occurred during game run\.|Traceback \(most recent call last\):)"; then
+            log_warn "检测到游戏运行异常，等待20秒后重启（便于调试）..."
             sleep 3
             screen -S "$SCREEN_NAME" -X stuff "$(printf '\r')"
-            sleep 5
+            sleep 20
             restart_rl_swarm
             break
         fi

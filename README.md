@@ -24,12 +24,12 @@
 
 脚本会在以下情况下自动重启：
 
-1. **检测到wandb同步信息**：
+1. **检测到游戏运行异常**：
    ```
-   wandb: You can sync this run to the cloud by running:
-   wandb: wandb sync 
-   wandb: Find logs at: 
+   ERROR: Exception occurred during game run.
+   Traceback (most recent call last):
    ```
+   当检测到这两种错误信息中的任意一种时，会等待20秒后重启（便于调试和查看错误详情）
 
 2. **Round进度落后**：
    - 检测到 "Starting round: XXXX/1000000"
