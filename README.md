@@ -1,125 +1,140 @@
-# RL Swarm 自动重启脚本使用说明
+# RL Swarm 自动重启脚本
 
-## 脚本功能
+## 简介
 
-这些自动重启脚本可以：
-1. 自动备份认证文件（userApiKey.json 和 userData.json）
-2. 在检测到特定条件时自动重启RL Swarm
-3. 自动输入必要的参数（N和模型名称）
-4. 监控round进度并与网页同步
-5. **Screen版本额外功能**：
-   - 自动创建和管理Screen会话
-   - 后台运行，支持SSH断开重连
-   - 提供状态查询和停止命令
+`screen_auto_restart.sh` 是一个用于自动监控和重启 RL Swarm 的脚本，使用 Screen 会话管理，支持后台运行和 SSH 断开重连。
 
-## 重启条件
+## 功能特性
 
-脚本会在以下情况下自动重启：
+- ✅ 自动备份和恢复认证文件
+- ✅ 在 Screen 会话中运行，支持 SSH 断开重连
+- ✅ 自动检测错误并重启
+- ✅ 监控 round 进度并与网页同步
+- ✅ 自动输入必要的参数
+- ✅ 后台运行模式
+- ✅ 状态查询和优雅停止
 
-1. **检测到游戏运行异常**：
-   ```
-   ERROR: Exception occurred during game run.
-   Traceback (most recent call last):
-   ```
-   当检测到这两种错误信息中的任意一种时，会等待20秒后重启（便于调试和查看错误详情）
+## 快速开始
 
-2. **Round进度落后**：
-   - 检测到 "Starting round: XXXX/1000000"
-   - 与 [https://dashboard.gensyn.ai/](https://dashboard.gensyn.ai/) 的最新round比较
-   - 如果差距超过20，则重启
-
-## 使用方法
-
-### Screen版本（screen_auto_restart.sh）- 推荐
-
-#### 1. 给脚本添加执行权限
+### 1. 给脚本添加执行权限
 ```bash
 chmod +x screen_auto_restart.sh
 ```
 
-#### 2. 运行脚本（自动创建Screen会话）
+### 2. 后台运行（推荐）
 ```bash
-./screen_auto_restart.sh
+./screen_auto_restart.sh --daemon
 ```
 
-#### 3. 查看运行状态
+### 3. 查看运行状态
 ```bash
 ./screen_auto_restart.sh --status
 ```
 
-#### 4. 连接到Screen会话查看详细输出
+### 4. 连接到 Screen 会话查看详细输出
 ```bash
 screen -r gensyn
 # 按 Ctrl+A, D 分离会话
 ```
 
-#### 5. 停止脚本
+## 使用方法
+
+### 后台运行（推荐）
+```bash
+./screen_auto_restart.sh --daemon
+```
+- 在后台启动监控
+- 支持 SSH 断开重连
+- 日志保存在 `/tmp/rl_swarm_daemon.log`
+
+### 前台运行
+```bash
+./screen_auto_restart.sh
+```
+- 在前台运行，可以看到实时输出
+- 按 Ctrl+C 停止
+
+### 查看状态
+```bash
+./screen_auto_restart.sh --status
+```
+- 显示 Screen 会话状态
+- 显示 RL Swarm 进程状态
+- 显示备份文件状态
+
+### 停止脚本
 ```bash
 ./screen_auto_restart.sh --stop
 ```
+- 优雅停止 RL Swarm
+- 发送 Ctrl+C 到 Screen 会话
 
-#### 6. 查看帮助
+### 查看帮助
 ```bash
 ./screen_auto_restart.sh --help
 ```
 
-## 脚本工作流程
+## 日志查看
 
-### 基础版本工作流程
+### 后台脚本日志
+```bash
+tail -f /tmp/rl_swarm_daemon.log
+```
 
-1. **备份阶段**：
-   - 备份 `/root/rl-swarm/modal-login/temp-data/userApiKey.json`
-   - 备份 `/root/rl-swarm/modal-login/temp-data/userData.json`
-   - 保存到 `/root/backup/` 目录
+### Screen 输出日志
+```bash
+tail -f /tmp/rl_swarm_screen.log
+```
 
-2. **启动阶段**：
-   - 进入 `/root/rl-swarm` 目录
-   - 激活虚拟环境 `.venv/bin/activate`
-   - 启动 `./run_rl_swarm.sh`
+## 重启条件
 
-3. **监控阶段**：
-   - 监控输出日志
-   - 检测 "Waiting for modal userData.json to be created"
-   - 自动恢复备份文件
-   - 自动输入 "N" 和 "Gensyn/Qwen2.5-0.5B-Instruct"
+脚本会在以下情况下自动重启 RL Swarm：
 
-4. **重启检测**：
-   - 监控wandb同步信息
-   - 监控round进度
-   - 在满足条件时自动重启
+1. **游戏运行异常**
+   - 检测到 `ERROR: Exception occurred during game run.`
+   - 检测到 `Traceback (most recent call last):`
+   - 等待 20 秒后重启（便于调试）
 
-### Screen版本工作流程
+2. **程序异常退出**
+   - 检测到 `Terminated`、`Killed`、`Aborted`、`Segmentation fault`
+   - 等待 10 秒后重启
 
-1. **初始化阶段**：
-   - 检查并安装screen（如果需要）
-   - 创建或连接到名为"gensyn"的Screen会话
-   - 备份认证文件
+3. **Round 进度落后**
+   - 检测到 round 差距超过 20
+   - 与 [dashboard.gensyn.ai](https://dashboard.gensyn.ai/) 同步比较
 
-2. **启动阶段**：
-   - 在Screen会话中执行命令
-   - 自动进入RL Swarm目录
-   - 激活虚拟环境
-   - 启动RL Swarm
+4. **启动超时**
+   - 启动超过 10 分钟未完成
+   - 自动重启
 
-3. **监控阶段**：
-   - 在Screen会话中启动日志监控
-   - 实时监控输出并检测重启条件
-   - 自动处理认证文件恢复和参数输入
+## Screen 会话管理
 
-4. **管理阶段**：
-   - 提供状态查询功能
-   - 支持优雅停止
-   - 自动清理残留进程
+### 连接到会话
+```bash
+screen -r gensyn
+```
+
+### 查看所有会话
+```bash
+screen -list
+```
+
+### 分离会话
+在 Screen 会话中按 `Ctrl+A, D`
+
+### 停止会话
+```bash
+screen -S gensyn -X quit
+```
 
 ## 文件结构
 
 ```
 /root/
 ├── rl-swarm/
-│   ├── modal-login/
-│   │   └── temp-data/
-│   │       ├── userApiKey.json
-│   │       └── userData.json
+│   ├── modal-login/temp-data/
+│   │   ├── userApiKey.json
+│   │   └── userData.json
 │   └── run_rl_swarm.sh
 ├── backup/
 │   ├── userApiKey.json
@@ -129,19 +144,19 @@ screen -r gensyn
 
 ## 注意事项
 
-1. **首次运行**：确保已经手动运行过RL Swarm并完成了认证流程
-2. **网络连接**：脚本需要访问 https://dashboard.gensyn.ai/ 来获取最新round信息
-3. **权限要求**：需要root权限或对相关目录的读写权限
-4. **进程管理**：脚本会自动清理残留的RL Swarm进程
+1. **首次运行**：确保已经手动运行过 RL Swarm 并完成了认证流程
+2. **网络连接**：脚本需要访问 dashboard.gensyn.ai 来获取最新 round 信息
+3. **权限要求**：需要 root 权限或对相关目录的读写权限
+4. **Screen 安装**：脚本会自动检查并安装 screen（如果需要）
 
 ## 故障排除
 
-### 如果脚本无法启动RL Swarm：
+### 如果脚本无法启动
 ```bash
 # 检查虚拟环境
 ls -la /root/rl-swarm/.venv/
 
-# 检查run_rl_swarm.sh权限
+# 检查脚本权限
 ls -la /root/rl-swarm/run_rl_swarm.sh
 
 # 手动测试启动
@@ -150,7 +165,7 @@ source .venv/bin/activate
 ./run_rl_swarm.sh
 ```
 
-### 如果认证文件恢复失败：
+### 如果认证文件恢复失败
 ```bash
 # 检查备份文件
 ls -la /root/backup/
@@ -160,43 +175,18 @@ cp /root/backup/userApiKey.json /root/rl-swarm/modal-login/temp-data/
 cp /root/backup/userData.json /root/rl-swarm/modal-login/temp-data/
 ```
 
-### 如果无法获取网页round信息：
+### 如果无法获取网页 round 信息
 ```bash
 # 测试网络连接
 curl -s "https://dashboard.gensyn.ai/"
 
-# 检查DNS解析
+# 检查 DNS 解析
 nslookup dashboard.gensyn.ai
 ```
 
-## 停止脚本
+## 版本信息
 
-### 基础版本
-```bash
-# 如果在前台运行，按 Ctrl+C
-
-# 或者直接杀死进程
-pkill -f simple_auto_restart.sh
-```
-
-### Screen版本
-```bash
-# 优雅停止（推荐）
-./screen_auto_restart.sh --stop
-
-# 或者连接到screen会话手动停止
-screen -r gensyn
-# 然后按 Ctrl+C
-
-# 或者直接杀死进程
-pkill -f screen_auto_restart.sh
-```
-
-## 日志查看
-
-脚本的输出会显示在控制台，包括：
-- [INFO] 信息日志
-- [WARN] 警告日志  
-- [ERROR] 错误日志
-
-临时日志文件：`/tmp/rl_swarm_output.log` 
+- **脚本版本**: screen_auto_restart.sh
+- **支持系统**: Linux (Ubuntu/Debian)
+- **依赖**: screen, curl, bash
+- **RL Swarm 版本**: 兼容 v0.1.1+ 

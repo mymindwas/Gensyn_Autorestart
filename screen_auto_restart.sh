@@ -104,10 +104,10 @@ start_rl_swarm_in_screen() {
     
     # 发送命令到screen会话
     screen -S "$SCREEN_NAME" -X stuff "cd /root/rl-swarm$(printf '\r')"
-    sleep 2
+    sleep 1
     
     screen -S "$SCREEN_NAME" -X stuff "source .venv/bin/activate$(printf '\r')"
-    sleep 2
+    sleep 1
     
     # 启动RL Swarm
     screen -S "$SCREEN_NAME" -X stuff "./run_rl_swarm.sh$(printf '\r')"
@@ -120,58 +120,119 @@ start_rl_swarm_in_screen() {
 monitor_rl_swarm() {
     log_info "开始监控RL Swarm输出..."
     
-    # 创建临时日志文件
-    LOG_FILE="/tmp/rl_swarm_monitor.log"
-    
-    # 在screen中启动监控
-    screen -S "$SCREEN_NAME" -X stuff "tail -f /root/rl-swarm/logs/*.log 2>/dev/null | tee $LOG_FILE$(printf '\r')"
-    sleep 5
-    
-    # 监控日志文件
-    tail -f "$LOG_FILE" | while read line; do
-        echo "$line"
+    while true; do
+        # 创建临时日志文件来捕获screen输出
+        LOG_FILE="/tmp/rl_swarm_screen.log"
         
-        # 检测到等待userData.json时恢复文件
-        if echo "$line" | grep -q "Waiting for modal userData.json to be created"; then
-            log_info "检测到等待userData.json，恢复备份文件..."
-            restore_auth_files
-            
-            # 发送N和模型名称到screen会话
-            sleep 3
-            screen -S "$SCREEN_NAME" -X stuff "N$(printf '\r')"
-            sleep 2
-            screen -S "$SCREEN_NAME" -X stuff "Gensyn/Qwen2.5-0.5B-Instruct$(printf '\r')"
-        fi
+        # 启动screen日志捕获
+        screen -S "$SCREEN_NAME" -X logfile "$LOG_FILE"
+        screen -S "$SCREEN_NAME" -X log on
         
-        # 检测异常错误
-        if echo "$line" | grep -E "(ERROR: Exception occurred during game run\.|Traceback \(most recent call last\):)"; then
-            log_warn "检测到游戏运行异常，等待20秒后重启（便于调试）..."
-            sleep 3
-            screen -S "$SCREEN_NAME" -X stuff "$(printf '\r')"
-            sleep 20
-            restart_rl_swarm
-            break
-        fi
+        sleep 5
         
-        # 检测round信息并比较
-        if echo "$line" | grep -q "Starting round:"; then
-            current_round=$(echo "$line" | grep -o "Starting round: [0-9]*" | grep -o "[0-9]*")
-            
-            if [ -n "$current_round" ] && [ "$current_round" -gt 0 ]; then
-                # 尝试从网页获取最新round
-                latest_round=$(curl -s "https://dashboard.gensyn.ai/" 2>/dev/null | grep -o 'round[^0-9]*[0-9]*' | grep -o '[0-9]*' | tail -1)
-                
-                if [ -n "$latest_round" ] && [ "$latest_round" -gt 0 ]; then
-                    diff=$((latest_round - current_round))
-                    if [ $diff -gt 20 ]; then
-                        log_warn "检测到round差距过大 (当前: $current_round, 最新: $latest_round, 差距: $diff)，准备重启..."
-                        sleep 5
+        # 初始化状态变量
+        startup_complete=false
+        startup_start_time=$(date +%s)
+        
+        # 监控screen日志文件（添加错误处理）
+        tail -f "$LOG_FILE" 2>/dev/null | while read line; do
+                            # 检查启动超时（只在启动阶段检查，启动完成后不检查）
+                if [ "$startup_complete" = false ]; then
+                    current_time=$(date +%s)
+                    startup_duration=$((current_time - startup_start_time))
+                    
+                    # 如果启动超过10分钟还没有完成，则重启
+                    if [ $startup_duration -gt 600 ]; then
+                        log_warn "启动超时（超过10分钟未完成），准备重启..."
                         restart_rl_swarm
-                        break
+                        break  # 跳出当前tail -f循环，重新开始监控
+                    fi
+                fi
+            
+            # 过滤掉screen的控制字符
+            clean_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/\r//g')
+            
+            if [ -n "$clean_line" ]; then
+                echo "$clean_line"
+                
+                # 检测启动完成标志
+                if echo "$clean_line" | grep -q "Good luck in the swarm!"; then
+                    startup_complete=true
+                    log_info "RL Swarm启动完成"
+                elif echo "$clean_line" | grep -q "Starting round:"; then
+                    startup_complete=true
+                    log_info "RL Swarm启动完成（检测到round开始）"
+                elif echo "$clean_line" | grep -q "Connected to peer"; then
+                    startup_complete=true
+                    log_info "RL Swarm启动完成（检测到peer连接）"
+                fi
+                
+                # 检测到等待userData.json时恢复文件
+                if echo "$clean_line" | grep -q "Waiting for modal userData.json to be created"; then
+                    log_info "检测到等待userData.json，恢复备份文件..."
+                    restore_auth_files
+                    
+                    # 发送N和模型名称到screen会话
+                    sleep 3
+                    screen -S "$SCREEN_NAME" -X stuff "N$(printf '\r')"
+                    sleep 2
+                    screen -S "$SCREEN_NAME" -X stuff "Gensyn/Qwen2.5-0.5B-Instruct$(printf '\r')"
+                fi
+                
+                # 检测异常错误（只在启动完成后检测）
+                if [ "$startup_complete" = true ] && echo "$clean_line" | grep -E "(ERROR: Exception occurred during game run\.|Traceback \(most recent call last\):)"; then
+                    log_warn "检测到游戏运行异常，等待20秒后重启（便于调试）..."
+                    sleep 20
+                    restart_rl_swarm
+                    break  # 跳出当前tail -f循环，重新开始监控
+                fi
+                
+                # 检测程序异常退出（只在启动完成后检测）
+                if [ "$startup_complete" = true ] && echo "$clean_line" | grep -E "(Terminated|Killed|Aborted|Segmentation fault)"; then
+                    log_warn "检测到程序异常退出，等待10秒后重启..."
+                    sleep 10
+                    restart_rl_swarm
+                    break  # 跳出当前tail -f循环，重新开始监控
+                fi
+                
+                # 检测round信息并比较（每次检测到新的round都进行比较）
+                if echo "$clean_line" | grep -q "Starting round:"; then
+                    current_round=$(echo "$clean_line" | grep -o "Starting round: [0-9]*" | grep -o "[0-9]*")
+                    
+                    if [ -n "$current_round" ] && [ "$current_round" -gt 0 ]; then
+                        log_debug "检测到round: $current_round"
+                        
+                        # 尝试从网页获取最新round（设置超时避免阻塞）
+                        latest_round=$(timeout 10 curl -s "https://dashboard.gensyn.ai/" 2>/dev/null | grep -o 'round[^0-9]*[0-9]*' | grep -o '[0-9]*' | tail -1)
+                        
+                        if [ -n "$latest_round" ] && [ "$latest_round" -gt 0 ]; then
+                            diff=$((latest_round - current_round))
+                            log_debug "Round比较: 当前=$current_round, 最新=$latest_round, 差距=$diff"
+                            
+                            if [ $diff -gt 20 ]; then
+                                log_warn "检测到round差距过大 (当前: $current_round, 最新: $latest_round, 差距: $diff)，准备重启..."
+                                sleep 5
+                                restart_rl_swarm
+                                break  # 跳出当前tail -f循环，重新开始监控
+                            fi
+                        else
+                            log_debug "无法从网页获取最新round信息"
+                        fi
                     fi
                 fi
             fi
+        done
+        
+        # 检查RL Swarm进程是否还在运行
+        if ! pgrep -f "run_rl_swarm.sh" > /dev/null; then
+            log_warn "RL Swarm进程已停止，准备重启..."
+            restart_rl_swarm
+            sleep 5
         fi
+        
+        # 无论什么原因，都继续监控
+        log_info "继续监控..."
+        sleep 5
     done
 }
 
@@ -179,26 +240,26 @@ monitor_rl_swarm() {
 restart_rl_swarm() {
     log_info "重启RL Swarm..."
     
-    # 停止当前进程
-    screen -S "$SCREEN_NAME" -X stuff "$(printf '\003')"  # Ctrl+C
+    # 发送Ctrl+C停止当前进程
+    screen -S "$SCREEN_NAME" -X stuff "$(printf '\003')"
     sleep 3
     
-    # 清理进程
-    pkill -f "run_rl_swarm.sh" 2>/dev/null || true
-    pkill -f "python.*rgym_exp" 2>/dev/null || true
+    # 在现有screen会话中重新启动RL Swarm
+    log_info "在现有screen会话中重新启动RL Swarm..."
+    screen -S "$SCREEN_NAME" -X stuff "cd /root/rl-swarm$(printf '\r')"
+    sleep 1
+    screen -S "$SCREEN_NAME" -X stuff "source .venv/bin/activate$(printf '\r')"
+    sleep 1
+    screen -S "$SCREEN_NAME" -X stuff "./run_rl_swarm.sh$(printf '\r')"
     
-    sleep 2
-    
-    # 重新启动
-    start_rl_swarm_in_screen
+    log_info "RL Swarm已在现有screen会话中重新启动"
 }
 
-# 清理进程
+# 清理临时文件
 cleanup() {
-    log_info "清理进程..."
-    pkill -f "run_rl_swarm.sh" 2>/dev/null || true
-    pkill -f "python.*rgym_exp" 2>/dev/null || true
-    rm -f /tmp/rl_swarm_monitor.log
+    log_info "清理临时文件..."
+    rm -f /tmp/rl_swarm_screen.log
+    rm -f /tmp/rl_swarm_daemon.log
 }
 
 # 显示帮助信息
@@ -206,7 +267,8 @@ show_help() {
     echo "RL Swarm 自动重启脚本（Screen版本）"
     echo ""
     echo "使用方法:"
-    echo "  $0                    # 启动自动重启"
+    echo "  $0                    # 前台启动自动重启"
+    echo "  $0 --daemon          # 后台启动自动重启（推荐）"
     echo "  $0 --help            # 显示帮助"
     echo "  $0 --status          # 显示状态"
     echo "  $0 --stop            # 停止脚本"
@@ -215,6 +277,10 @@ show_help() {
     echo "  screen -r $SCREEN_NAME    # 连接到screen会话"
     echo "  screen -list              # 查看所有screen会话"
     echo "  screen -S $SCREEN_NAME -X quit  # 停止screen会话"
+    echo ""
+    echo "日志查看:"
+    echo "  tail -f /tmp/rl_swarm_daemon.log  # 查看后台脚本日志"
+    echo "  tail -f /tmp/rl_swarm_screen.log  # 查看screen输出日志"
 }
 
 # 显示状态
@@ -246,9 +312,17 @@ main() {
             ;;
         --stop)
             log_info "停止RL Swarm..."
-            screen -S "$SCREEN_NAME" -X stuff "$(printf '\003')" 2>/dev/null || true
-            pkill -f "run_rl_swarm.sh" 2>/dev/null || true
-            pkill -f "python.*rgym_exp" 2>/dev/null || true
+            # 发送Ctrl+C到screen会话
+            screen -S "$SCREEN_NAME" -X stuff "$(printf '\003')"
+            exit 0
+            ;;
+        --daemon)
+            # 后台运行模式
+            log_info "启动后台监控模式..."
+            nohup "$0" > /tmp/rl_swarm_daemon.log 2>&1 &
+            echo "后台进程已启动，PID: $!"
+            echo "查看日志: tail -f /tmp/rl_swarm_daemon.log"
+            echo "查看状态: $0 --status"
             exit 0
             ;;
     esac
@@ -264,8 +338,8 @@ main() {
     # 设置screen会话
     setup_screen
     
-    # 设置信号处理
-    trap cleanup EXIT
+    # 设置信号处理（仅在收到终止信号时清理）
+    trap 'log_info "收到终止信号，清理后退出..."; cleanup; exit 0' SIGTERM SIGINT
     
     # 启动RL Swarm
     start_rl_swarm_in_screen
