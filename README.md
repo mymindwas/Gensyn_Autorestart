@@ -1,13 +1,5 @@
 # RL Swarm 自动重启脚本使用说明
 
-## 脚本版本
-
-我们提供了三个版本的脚本：
-
-1. **`simple_auto_restart.sh`** - 基础版本，直接在前台运行
-2. **`screen_auto_restart.sh`** - 完整版本，包含Screen会话管理（推荐）
-3. **`auto_restart_rl_swarm.sh`** - 高级版本，功能最全面
-
 ## 脚本功能
 
 这些自动重启脚本可以：
@@ -37,18 +29,6 @@
    - 如果差距超过20，则重启
 
 ## 使用方法
-
-### 基础版本（simple_auto_restart.sh）
-
-#### 1. 给脚本添加执行权限
-```bash
-chmod +x simple_auto_restart.sh
-```
-
-#### 2. 运行脚本
-```bash
-./simple_auto_restart.sh
-```
 
 ### Screen版本（screen_auto_restart.sh）- 推荐
 
@@ -144,7 +124,7 @@ screen -r gensyn
 ├── backup/
 │   ├── userApiKey.json
 │   └── userData.json
-└── simple_auto_restart.sh
+└── screen_auto_restart.sh
 ```
 
 ## 注意事项
