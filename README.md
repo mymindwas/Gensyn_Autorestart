@@ -2,17 +2,18 @@
 
 ## 简介
 
-`screen_auto_restart.sh` 是一个用于自动监控和重启 RL Swarm 的脚本，使用 Screen 会话管理，支持后台运行和 SSH 断开重连。
+`screen_auto_restart.sh` 是一个用于自动监控和重启 RL Swarm 的脚本，使用 Screen 会话管理，支持后台运行和 SSH 断开重连。脚本采用循环监控设计，确保 RL Swarm 持续稳定运行。
 
 ## 功能特性
 
-- ✅ 自动备份和恢复认证文件
-- ✅ 在 Screen 会话中运行，支持 SSH 断开重连
-- ✅ 自动检测错误并重启
-- ✅ 监控 round 进度并与网页同步
-- ✅ 自动输入必要的参数
-- ✅ 后台运行模式
-- ✅ 状态查询和优雅停止
+- ✅ **自动备份和恢复认证文件**：启动前自动备份，重启时自动恢复
+- ✅ **Screen 会话管理**：支持 SSH 断开重连，会话持久化
+- ✅ **智能重启机制**：删除旧会话，创建新会话，避免状态污染
+- ✅ **循环监控设计**：启动→监控→重启→监控的完整循环
+- ✅ **自动交互处理**：自动处理认证和模型选择交互
+- ✅ **对标节点监控**：与特定节点比较进度，防止落后
+- ✅ **后台运行模式**：支持 daemon 模式，PID 文件管理
+- ✅ **状态查询和优雅停止**：完整的进程管理功能
 
 ## 快速开始
 
@@ -46,6 +47,7 @@ screen -r gensyn
 - 在后台启动监控
 - 支持 SSH 断开重连
 - 日志保存在 `/tmp/rl_swarm_daemon.log`
+- 使用 PID 文件确保只有一个实例运行
 
 ### 前台运行
 ```bash
@@ -58,6 +60,7 @@ screen -r gensyn
 ```bash
 ./screen_auto_restart.sh --status
 ```
+- 显示后台进程状态和 PID
 - 显示 Screen 会话状态
 - 显示 RL Swarm 进程状态
 - 显示备份文件状态
@@ -66,8 +69,9 @@ screen -r gensyn
 ```bash
 ./screen_auto_restart.sh --stop
 ```
-- 优雅停止 RL Swarm
-- 发送 Ctrl+C 到 Screen 会话
+- 停止后台监控进程
+- 停止所有 Screen 会话
+- 清理 PID 文件
 
 ### 查看帮助
 ```bash
@@ -86,7 +90,15 @@ tail -f /tmp/rl_swarm_daemon.log
 tail -f /tmp/rl_swarm_screen.log
 ```
 
-## 重启条件
+## 监控和重启逻辑
+
+### 循环设计
+脚本采用循环监控设计：
+```
+启动 → 监控 → 检测问题 → 重启 → 监控 → ...
+```
+
+### 重启条件
 
 脚本会在以下情况下自动重启 RL Swarm：
 
@@ -100,12 +112,34 @@ tail -f /tmp/rl_swarm_screen.log
    - 等待 10 秒后重启
 
 3. **Round 进度落后**
-   - 检测到 round 差距超过 20
-   - 与 [dashboard.gensyn.ai](https://dashboard.gensyn.ai/) 同步比较
+   - 与对标节点 `untamed alert rhino` 比较
+   - 计算差距：当前 round - 对标节点 score
+   - 如果差距 < 4680，则重启
+   - 使用 API：`https://dashboard.gensyn.ai/api/v1/peer?name=untamed%20alert%20rhino`
 
-4. **启动超时**
-   - 启动超过 10 分钟未完成
+4. **进程停止**
+   - 检测到 RL Swarm 进程停止
    - 自动重启
+
+5. **Screen 会话丢失**
+   - 检测到 Screen 会话不存在
+   - 自动重启
+
+### 智能重启机制
+
+重启时采用完全清理策略：
+1. **删除所有旧 Screen 会话**：避免状态污染
+2. **恢复认证文件**：确保认证正常
+3. **创建新 Screen 会话**：全新环境
+4. **启动 RL Swarm**：在新的干净环境中运行
+5. **重新开始监控**：形成完整循环
+
+### 自动交互处理
+
+脚本自动处理以下交互：
+- **认证文件恢复**：检测到 "Waiting for modal userData.json" 时自动恢复
+- **Hugging Face Hub 推送**：检测到推送提示时自动输入 "N"
+- **模型选择**：自动输入 "Gensyn/Qwen2.5-0.5B-Instruct"
 
 ## Screen 会话管理
 
@@ -127,6 +161,22 @@ screen -list
 screen -S gensyn -X quit
 ```
 
+## 进程管理
+
+### PID 文件机制
+- 使用 `/tmp/rl_swarm_daemon.pid` 跟踪运行实例
+- 防止多个实例同时运行
+- 启动前检查现有实例
+
+### 进程检查
+```bash
+# 检查后台进程
+ps -p $(cat /tmp/rl_swarm_daemon.pid)
+
+# 检查 RL Swarm 进程
+ps aux | grep -E "(run_rl_swarm|rgym_exp)" | grep -v grep
+```
+
 ## 文件结构
 
 ```
@@ -139,15 +189,20 @@ screen -S gensyn -X quit
 ├── backup/
 │   ├── userApiKey.json
 │   └── userData.json
-└── screen_auto_restart.sh
+├── screen_auto_restart.sh
+└── /tmp/
+    ├── rl_swarm_daemon.pid
+    ├── rl_swarm_daemon.log
+    └── rl_swarm_screen.log
 ```
 
 ## 注意事项
 
 1. **首次运行**：确保已经手动运行过 RL Swarm 并完成了认证流程
-2. **网络连接**：脚本需要访问 dashboard.gensyn.ai 来获取最新 round 信息
+2. **网络连接**：脚本需要访问 API 来获取对标节点信息
 3. **权限要求**：需要 root 权限或对相关目录的读写权限
 4. **Screen 安装**：脚本会自动检查并安装 screen（如果需要）
+5. **单一实例**：确保同时只有一个监控实例运行
 
 ## 故障排除
 
@@ -158,6 +213,9 @@ ls -la /root/rl-swarm/.venv/
 
 # 检查脚本权限
 ls -la /root/rl-swarm/run_rl_swarm.sh
+
+# 检查 PID 文件
+cat /tmp/rl_swarm_daemon.pid
 
 # 手动测试启动
 cd /root/rl-swarm
@@ -175,18 +233,38 @@ cp /root/backup/userApiKey.json /root/rl-swarm/modal-login/temp-data/
 cp /root/backup/userData.json /root/rl-swarm/modal-login/temp-data/
 ```
 
-### 如果无法获取网页 round 信息
+### 如果无法获取对标节点信息
 ```bash
-# 测试网络连接
-curl -s "https://dashboard.gensyn.ai/"
+# 测试 API 连接
+curl -s "https://dashboard.gensyn.ai/api/v1/peer?name=untamed%20alert%20rhino"
 
-# 检查 DNS 解析
-nslookup dashboard.gensyn.ai
+# 检查网络连接
+ping dashboard.gensyn.ai
+```
+
+### 如果有多个 Screen 会话
+```bash
+# 查看所有会话
+screen -list
+
+# 清理重复会话
+screen -ls | grep gensyn | awk '{print $1}' | xargs -I {} screen -S {} -X quit
+```
+
+### 如果监控循环中断
+```bash
+# 检查日志
+tail -50 /tmp/rl_swarm_daemon.log
+
+# 重新启动
+./screen_auto_restart.sh --stop
+./screen_auto_restart.sh --daemon
 ```
 
 ## 版本信息
 
-- **脚本版本**: screen_auto_restart.sh
+- **脚本版本**: screen_auto_restart.sh v2.0
 - **支持系统**: Linux (Ubuntu/Debian)
 - **依赖**: screen, curl, bash
-- **RL Swarm 版本**: 兼容 v0.1.1+ 
+- **RL Swarm 版本**: 兼容 v0.1.1+
+- **监控特性**: 循环监控、智能重启、对标节点比较 
