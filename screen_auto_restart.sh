@@ -208,6 +208,7 @@ monitor_rl_swarm() {
         startup_complete=false
         auth_handled=false
         startup_start_time=$(date +%s)
+        last_log_update=$(date +%s)  # 记录最后日志更新时间
         
         # 监控screen日志文件
         tail -f "$LOG_FILE" 2>/dev/null | while read line; do
@@ -216,6 +217,8 @@ monitor_rl_swarm() {
             
             if [ -n "$clean_line" ]; then
                 echo "$clean_line"
+                # 更新最后日志时间
+                last_log_update=$(date +%s)
                 
                 # 检测启动完成标志
                 if echo "$clean_line" | grep -q "Good luck in the swarm!"; then
@@ -280,13 +283,13 @@ monitor_rl_swarm() {
                             diff=$((current_round - target_score))
                             log_info "Round比较: 当前round=$current_round, 对标节点score=$target_score, 差距=$diff"
                             
-                            if [ $diff -lt 4680 ]; then
-                                log_warn "检测到round落后 (当前: $current_round, 对标score: $target_score, 差距: $diff < 4680)，准备重启..."
+                            if [ $diff -lt 4712 ]; then
+                                log_warn "检测到round落后 (当前: $current_round, 对标score: $target_score, 差距: $diff < 4712)，准备重启..."
                                 sleep 5
                                 start_or_restart_rl_swarm true
                                 break
                             else
-                                log_info "Round进度正常 (差距: $diff >= 4680)"
+                                log_info "Round进度正常 (差距: $diff >= 4712)"
                             fi
                         else
                             log_warn "无法获取对标节点score信息"
@@ -310,8 +313,17 @@ monitor_rl_swarm() {
             sleep 5
         fi
         
+        # 检查日志是否卡住（20分钟无更新）
+        current_time=$(date +%s)
+        time_since_last_log=$((current_time - last_log_update))
+        if [ "$startup_complete" = true ] && [ $time_since_last_log -gt 1200 ]; then  # 1200秒 = 20分钟
+            log_warn "检测到日志卡住 (${time_since_last_log}秒无更新)，准备重启..."
+            start_or_restart_rl_swarm true
+            break
+        fi
+        
         # 继续监控
-        log_info "继续监控..."
+        log_info "继续监控... (距离上次日志更新: ${time_since_last_log}秒)"
         sleep 5
     done
 }
@@ -334,6 +346,13 @@ show_help() {
     echo "  $0 --help            # 显示帮助"
     echo "  $0 --status          # 显示状态"
     echo "  $0 --stop            # 停止脚本"
+    echo ""
+    echo "自动重启条件:"
+    echo "  - 检测到游戏运行异常或程序崩溃"
+    echo "  - RL Swarm进程停止运行"
+    echo "  - Screen会话不存在"
+    echo "  - Round进度落后对标节点超过4680"
+    echo "  - 日志卡住超过20分钟无更新"
     echo ""
     echo "进程管理:"
     echo "  - 脚本使用PID文件确保只有一个实例运行"
