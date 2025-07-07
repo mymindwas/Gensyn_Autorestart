@@ -233,11 +233,9 @@ cp /root/backup/userApiKey.json /root/rl-swarm/modal-login/temp-data/
 cp /root/backup/userData.json /root/rl-swarm/modal-login/temp-data/
 ```
 
-### 如果无法获取对标节点信息
+### 如果无法获取对标节点信息，超时15s
 ```bash
-# 测试 API 连接
-curl -s "https://dashboard.gensyn.ai/api/v1/peer?name=untamed%20alert%20rhino"
-
+可能是服务器处于国内，或者俄罗斯UA、白俄罗BY、乌克兰UA斯等地区，
 # 检查网络连接
 ping dashboard.gensyn.ai
 ```
