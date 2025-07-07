@@ -260,6 +260,14 @@ tail -50 /tmp/rl_swarm_daemon.log
 ./screen_auto_restart.sh --stop
 ./screen_auto_restart.sh --daemon
 ```
+### 问题一：
+```bash
+[INFO] 创建PID文件: /tmp/rl_swarm_daemon.pid (PID: 72215)
+[INFO] 备份认证文件...
+mkdir: cannot create directory ‘/backup’: Permission denied
+将路径中的/root替换成用户目录下的
+例如：/root/backup变为~/backup
+```
 
 ## 版本信息
 
