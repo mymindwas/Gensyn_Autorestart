@@ -43,6 +43,7 @@ screen -r gensyn
 ### 后台运行（推荐）
 ```bash
 ./screen_auto_restart.sh --daemon
+首次使用需要手动将两个登录文件备份至对应文件夹
 ```
 - 在后台启动监控
 - 支持 SSH 断开重连
