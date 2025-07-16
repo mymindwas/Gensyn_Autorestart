@@ -211,14 +211,17 @@ monitor_rl_swarm() {
         last_log_update=$(date +%s)  # 记录最后日志更新时间
         
         # 监控screen日志文件
+        # 使用临时文件来共享变量状态
+        echo "$(date +%s)" > /tmp/last_log_update.tmp
+        
         tail -f "$LOG_FILE" 2>/dev/null | while read line; do
             # 过滤掉screen的控制字符
             clean_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | sed 's/\r//g')
             
             if [ -n "$clean_line" ]; then
                 echo "$clean_line"
-                # 更新最后日志时间
-                last_log_update=$(date +%s)
+                # 更新最后日志时间到临时文件
+                echo "$(date +%s)" > /tmp/last_log_update.tmp
                 
                 # 检测启动完成标志
                 if echo "$clean_line" | grep -q "Good luck in the swarm!"; then
@@ -252,23 +255,32 @@ monitor_rl_swarm() {
                     fi
                 fi
                 
-                # 检测异常错误（只在启动完成后检测）
-                if [ "$startup_complete" = true ] && echo "$clean_line" | grep -E "(ERROR: Exception occurred during game run\.|Traceback \(most recent call last\):)"; then
+                # 检测异常错误（优先级最高，无论启动状态）
+                if echo "$clean_line" | grep -E "(ERROR: Exception occurred during game run\.|Traceback \(most recent call last\):)"; then
                     log_warn "检测到游戏运行异常，准备重启..."
                     sleep 20
                     start_or_restart_rl_swarm true
                     break
                 fi
                 
-                # 检测程序异常退出（只在启动完成后检测）
-                if [ "$startup_complete" = true ] && echo "$clean_line" | grep -E "(Terminated|Killed|Aborted|Segmentation fault)"; then
+                # 检测程序异常退出（优先级最高，无论启动状态）
+                if echo "$clean_line" | grep -E "(Terminated|Killed|Aborted|Segmentation fault)"; then
                     log_warn "检测到程序异常退出，准备重启..."
                     sleep 10
                     start_or_restart_rl_swarm true
                     break
                 fi
                 
-                # 检测round信息并比较
+                # 检测其他常见错误模式
+                if echo "$clean_line" | grep -E "(ConnectionError|TimeoutError|Connection refused|Connection reset)"; then
+                    log_warn "检测到连接错误，准备重启..."
+                    sleep 15
+                    start_or_restart_rl_swarm true
+                    break
+                fi
+                
+                
+                # 检测round信息并比较（只有在没有错误的情况下才执行）
                 if echo "$clean_line" | grep -q "Starting round:"; then
                     current_round=$(echo "$clean_line" | grep -o "Starting round: [0-9]*" | grep -o "[0-9]*")
                     
@@ -296,6 +308,25 @@ monitor_rl_swarm() {
                         fi
                     fi
                 fi
+                
+                # 检测程序是否长时间没有输出（可能卡住了）
+                # 只有在启动完成且运行一段时间后才检查
+                if [ "$startup_complete" = true ]; then
+                    current_time=$(date +%s)
+                    startup_duration=$((current_time - startup_start_time))
+                    # 从临时文件读取最后日志更新时间
+                    if [ -f "/tmp/last_log_update.tmp" ]; then
+                        last_log_update=$(cat /tmp/last_log_update.tmp)
+                        time_since_last_log=$((current_time - last_log_update))
+                        
+                        # 只有在启动完成超过10分钟后才开始检查长时间无输出
+                        if [ $startup_duration -gt 600 ] && [ $time_since_last_log -gt 600 ]; then  # 启动10分钟后，10分钟无输出
+                            log_warn "检测到程序长时间无输出 (启动${startup_duration}秒后，${time_since_last_log}秒无输出)，可能卡住了，准备重启..."
+                            start_or_restart_rl_swarm true
+                            break
+                        fi
+                    fi
+                fi
             fi
         done
         
@@ -313,17 +344,43 @@ monitor_rl_swarm() {
             sleep 5
         fi
         
-        # 检查日志是否卡住（20分钟无更新）
-        current_time=$(date +%s)
-        time_since_last_log=$((current_time - last_log_update))
-        if [ "$startup_complete" = true ] && [ $time_since_last_log -gt 1200 ]; then  # 1200秒 = 20分钟
-            log_warn "检测到日志卡住 (${time_since_last_log}秒无更新)，准备重启..."
-            start_or_restart_rl_swarm true
-            break
+        # 检查日志是否卡住（只有在启动完成且运行一段时间后才检查）
+        if [ "$startup_complete" = true ]; then
+            current_time=$(date +%s)
+            startup_duration=$((current_time - startup_start_time))
+            # 从临时文件读取最后日志更新时间
+            if [ -f "/tmp/last_log_update.tmp" ]; then
+                last_log_update=$(cat /tmp/last_log_update.tmp)
+                time_since_last_log=$((current_time - last_log_update))
+                
+                # 只有在启动完成超过15分钟后才开始检查日志卡住
+                if [ $startup_duration -gt 900 ] && [ $time_since_last_log -gt 1200 ]; then  # 启动15分钟后，20分钟无更新
+                    log_warn "检测到日志卡住 (启动${startup_duration}秒后，${time_since_last_log}秒无更新)，准备重启..."
+                    start_or_restart_rl_swarm true
+                    break
+                fi
+            fi
+        fi
+        
+        # 检查进程是否真的在运行（简化检查，移除CPU使用率检测）
+        if [ "$startup_complete" = true ]; then
+            # 检查进程是否在运行
+            if ! pgrep -f "run_rl_swarm.sh" > /dev/null && ! pgrep -f "rgym_exp" > /dev/null; then
+                log_warn "RL Swarm进程已停止，准备重启..."
+                start_or_restart_rl_swarm true
+                break
+            fi
         fi
         
         # 继续监控
-        log_info "继续监控... (距离上次日志更新: ${time_since_last_log}秒)"
+        if [ -f "/tmp/last_log_update.tmp" ]; then
+            last_log_update=$(cat /tmp/last_log_update.tmp)
+            current_time=$(date +%s)
+            time_since_last_log=$((current_time - last_log_update))
+            log_info "继续监控... (距离上次日志更新: ${time_since_last_log}秒)"
+        else
+            log_info "继续监控..."
+        fi
         sleep 5
     done
 }
@@ -333,6 +390,7 @@ cleanup() {
     log_info "清理临时文件..."
     rm -f /tmp/rl_swarm_screen.log
     rm -f /tmp/rl_swarm_daemon.log
+    rm -f /tmp/last_log_update.tmp
     cleanup_pid_file
 }
 
