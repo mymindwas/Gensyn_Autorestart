@@ -163,6 +163,8 @@ start_or_restart_rl_swarm() {
     sleep 1
     screen -S "$SCREEN_NAME" -X stuff "source .venv/bin/activate$(printf '\r')"
     sleep 1
+    screen -S "$SCREEN_NAME" -X stuff "export CUDA_VISIBLE_DEVICES=""$(printf '\r')"
+    sleep 1
     screen -S "$SCREEN_NAME" -X stuff "./run_rl_swarm.sh$(printf '\r')"
     
     log_info "RL Swarm已在screen会话中启动"
@@ -245,6 +247,8 @@ monitor_rl_swarm() {
                         screen -S "$SCREEN_NAME" -X stuff "N$(printf '\r')"
                         sleep 2
                         screen -S "$SCREEN_NAME" -X stuff "Gensyn/Qwen2.5-0.5B-Instruct$(printf '\r')"
+                        sleep 2
+                        screen -S "$SCREEN_NAME" -X stuff "Y$(printf '\r')"
                     elif echo "$clean_line" | grep -q "Would you like to push models you train in the RL swarm to the Hugging Face Hub?"; then
                         log_info "检测到Hugging Face Hub推送提示，发送输入..."
                         auth_handled=true
@@ -252,6 +256,8 @@ monitor_rl_swarm() {
                         screen -S "$SCREEN_NAME" -X stuff "N$(printf '\r')"
                         sleep 2
                         screen -S "$SCREEN_NAME" -X stuff "Gensyn/Qwen2.5-0.5B-Instruct$(printf '\r')"
+                        sleep 2
+                        screen -S "$SCREEN_NAME" -X stuff "Y$(printf '\r')"
                     fi
                 fi
                 
@@ -280,35 +286,75 @@ monitor_rl_swarm() {
                 fi
                 
                 
-                # 检测round信息并比较（只有在没有错误的情况下才执行）
-                if echo "$clean_line" | grep -q "Starting round:"; then
-                    current_round=$(echo "$clean_line" | grep -o "Starting round: [0-9]*" | grep -o "[0-9]*")
-                    
-                    if [ -n "$current_round" ] && [ "$current_round" -gt 0 ]; then
-                        log_info "检测到round: $current_round"
+                           # 检测Peer ID并监控score变化
+                if echo "$clean_line" | grep -q "Peer ID.*is already registered"; then
+                    # 提取Peer ID
+                    current_peer_id=$(echo "$clean_line" | grep -o "Qm[a-zA-Z0-9]*")
+                    if [ -n "$current_peer_id" ]; then
+                        log_info "检测到Peer ID: $current_peer_id"
                         
-                        # 从API获取对标节点的score
-                        target_score=$(timeout 10 curl -s "https://dashboard.gensyn.ai/api/v1/peer?name=untamed%20alert%20rhino" 2>/dev/null | grep -o '"score":[0-9]*' | grep -o '[0-9]*')
+                        # 将Peer ID保存到临时文件
+                        echo "$current_peer_id" > /tmp/current_peer_id.tmp
                         
-                        if [ -n "$target_score" ] && [ "$target_score" -gt 0 ]; then
-                            # 计算差距：当前round - 对标节点score
-                            diff=$((current_round - target_score))
-                            log_info "Round比较: 当前round=$current_round, 对标节点score=$target_score, 差距=$diff"
-                            
-                            if [ $diff -lt 4712 ]; then
-                                log_warn "检测到round落后 (当前: $current_round, 对标score: $target_score, 差距: $diff < 4712)，准备重启..."
-                                sleep 5
-                                start_or_restart_rl_swarm true
-                                break
-                            else
-                                log_info "Round进度正常 (差距: $diff >= 4712)"
-                            fi
+                        # 初始化score监控
+                        if [ ! -f "/tmp/last_score_check.tmp" ]; then
+                            echo "$(date +%s)" > /tmp/last_score_check.tmp
+                            echo "0" > /tmp/last_score.tmp
+                        fi
+                        
+                        # 立即获取一次score
+                        current_score=$(timeout 10 curl -s "https://dashboard.gensyn.ai/api/v1/peer?id=$current_peer_id" 2>/dev/null | grep -o '"score":[0-9]*' | grep -o '[0-9]*')
+                        
+                        if [ -n "$current_score" ] && [ "$current_score" -gt 0 ]; then
+                            log_info "当前score: $current_score"
+                            echo "$current_score" > /tmp/last_score.tmp
+                            echo "$(date +%s)" > /tmp/last_score_check.tmp
                         else
-                            log_warn "无法获取对标节点score信息"
+                            log_warn "无法获取当前score信息"
                         fi
                     fi
                 fi
                 
+                # 定期检查score变化（每4小时检查一次）
+                if [ -f "/tmp/last_score_check.tmp" ] && [ -f "/tmp/last_score.tmp" ]; then
+                    current_time=$(date +%s)
+                    last_check_time=$(cat /tmp/last_score_check.tmp)
+                    time_since_last_check=$((current_time - last_check_time))
+                    
+                    # 4小时 = 14400秒
+                    if [ $time_since_last_check -ge 14400 ]; then
+                        log_info "执行定期score检查..."
+                        
+                        if [ -f "/tmp/current_peer_id.tmp" ]; then
+                            current_peer_id=$(cat /tmp/current_peer_id.tmp)
+                            last_score=$(cat /tmp/last_score.tmp)
+                            
+                            # 获取最新score
+                            new_score=$(timeout 10 curl -s "https://dashboard.gensyn.ai/api/v1/peer?id=$current_peer_id" 2>/dev/null | grep -o '"score":[0-9]*' | grep -o '[0-9]*')
+                            
+                            if [ -n "$new_score" ] && [ "$new_score" -gt 0 ]; then
+                                log_info "Score检查: 上次=$last_score, 当前=$new_score"
+                                
+                                if [ "$new_score" -eq "$last_score" ]; then
+                                    log_warn "检测到score无变化 (上次: $last_score, 当前: $new_score)，准备重启..."
+                                    sleep 5
+                                    start_or_restart_rl_swarm true
+                                    break
+                                else
+                                    log_info "Score有变化，更新记录"
+                                    echo "$new_score" > /tmp/last_score.tmp
+                                fi
+                            else
+                                log_warn "无法获取最新score信息"
+                            fi
+                        else
+                            log_warn "未找到Peer ID，跳过score检查"
+                        fi
+                        
+                        # 更新检查时间
+                        echo "$(date +%s)" > /tmp/last_score_check.tmp
+                    fi
+                fi
                 # 检测程序是否长时间没有输出（可能卡住了）
                 # 只有在启动完成且运行一段时间后才检查
                 if [ "$startup_complete" = true ]; then
@@ -320,7 +366,7 @@ monitor_rl_swarm() {
                         time_since_last_log=$((current_time - last_log_update))
                         
                         # 只有在启动完成超过10分钟后才开始检查长时间无输出
-                        if [ $startup_duration -gt 600 ] && [ $time_since_last_log -gt 600 ]; then  # 启动10分钟后，10分钟无输出
+                        if [ $startup_duration -gt 600 ] && [ $time_since_last_log -gt 1800 ]; then  # 启动30分钟后，30分钟无输出
                             log_warn "检测到程序长时间无输出 (启动${startup_duration}秒后，${time_since_last_log}秒无输出)，可能卡住了，准备重启..."
                             start_or_restart_rl_swarm true
                             break
